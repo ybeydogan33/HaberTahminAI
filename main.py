@@ -40,6 +40,9 @@ import seaborn as sns
 # ─────────────────────────────────────────────
 # Tekrarlanabilirlik
 # ─────────────────────────────────────────────
+# SEED;
+# Rastgelelik yüzünden modeli her çalıştırdığımızda farklı sonuç almamak için. Bilimsel ve mühendislik 
+# deneylerinde sonuçların "tekrarlanabilir" olması şarttır.
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
@@ -51,12 +54,50 @@ if torch.cuda.is_available():
 # ─────────────────────────────────────────────
 # 1. HİPERPARAMETRELER
 # ─────────────────────────────────────────────
-MAX_LEN        = 256      # 150'den 256'ya çıkarıldı (Daha geniş bağlam)
+#MAX_LEN = 256 (Maksimum Uzunluk): Modelin bir haber metninden okuyacağı maksimum kelime sayısıdır. 
+
+#MIN_FREQ = 2 (Minimum Frekans): Bir kelimenin sözlüğe alınması için 
+# veri setinde en az kaç kere geçmesi gerektiğini belirtir. 
+
+#MAX_VOCAB_SIZE = 15000 (Maksimum Sözlük Boyutu): Modelin hafızasında tutacağı en popüler kelime kapasitesidir. 
+
+#EMBEDDING_DIM = 200 (Gömülme Boyutu): Her bir kelimenin ifade edileceği sayısal vektörün boyutudur.
+
+#NUM_CLASSES = 7 (Sınıf Sayısı): Modelin yapacağı tahmindeki kategori sayısıdır 
+
+#BATCH_SIZE = 64 (Yığın Boyutu): Modelin ağırlıklarını güncellemeden önce tek 
+# seferde aynı anda inceleyeceği haber metni sayısıdır. 
+
+#EPOCHS = 25 (Eğitim Turu): Modelin tüm veri setini baştan sona kaç 
+# kere göreceğini (tekrarlayacağını) belirtir.
+
+#LEARNING_RATE = 1e-3 (Öğrenme Hızı - 0.001): Modelin hatasını 
+# düzelteceği zaman atacağı adımın büyüklüğüdür. Çok büyük olursa 
+# doğru noktayı atlar, çok küçük olursa eğitimi yıllar sürer.
+
+#DROPOUT_RATE = 0.5 (Seyreltme Oranı): Eğitim sırasında ağdaki sinir 
+# hücrelerinin %50'sini rastgele kapatır. 
+# Bu sayede model belli başlı kelimelere aşırı bağımlı hale gelmez ve 
+# veriyi "ezberlemek" yerine "öğrenmek" zorunda kalır.
+
+#WEIGHT_DECAY = 1e-4 (Ağırlık Sönümleme - L2 Regularization): 
+# Modeldeki matematiksel ağırlıkların çok fazla büyümesini 
+# engelleyen bir cezalandırma sistemidir. Modelin esnekliğini korur ve yine ezberlemeyi engeller.
+
+#LR_GRID = [1e-2, 1e-3, 1e-4]: "Duyarlılık 
+# Analizi" için kullanılacak öğrenme hızlarıdır. Kod bu üç farklı hızı deneyip en iyisini bulacaktır.
+
+#LABEL_NAMES ve OUTPUT_DIR: Modelin tahmin ettiği 0, 1, 2 gibi 
+# rakamların insan dilindeki karşılıklarıdır ve çizdirilecek analiz 
+# grafiklerinin kaydedileceği klasörün adıdır.
+
+
+MAX_LEN        = 256      
 BATCH_SIZE     = 64
 EPOCHS         = 25
 EMBEDDING_DIM  = 200      
 NUM_CLASSES    = 7
-DROPOUT_RATE   = 0.5      # Overfitting'i önlemek için 0.4'ten 0.5'e çıkarıldı
+DROPOUT_RATE   = 0.5      
 LEARNING_RATE  = 1e-3
 MIN_FREQ       = 2        
 MAX_VOCAB_SIZE = 15000    
@@ -86,7 +127,6 @@ print(f"{'='*50}\n")
 # ─────────────────────────────────────────────
 # 3. ÖZEL TOKENIZER & STOPWORDS
 # ─────────────────────────────────────────────
-# Gereksiz kelime havuzu gürültüyü azaltmak için genişletildi
 _TR_STOPS = {
     "bir", "bu", "ve", "da", "de", "ile", "için", "olan", "olarak", "oldu", 
     "gibi", "çok", "daha", "en", "ise", "o", "bu", "şu", "ne", "kadar",
@@ -165,8 +205,12 @@ class HaberDataset(Dataset):
             "targets"  : torch.tensor(label, dtype=torch.long)
         }
 
+# ==============================================================================
+# Veri Analizi (Sınıf dağılımı, Görselleştirmeler)
+# Modeli eğitmeden önce verinin matematiğini anlamamız gerekir. Dengesiz veri varsa model 
+# yanıltıcı sonuç verebilir.
+# ==============================================================================
 def perform_eda(raw_data):
-    """ Kılavuzdaki 'Veri Analizi Görselleştirmeleri' gereksinimi """
     print("EDA (Keşifsel Veri Analizi) grafikleri oluşturuluyor...")
     
     cats = raw_data["category"]
@@ -200,6 +244,11 @@ def load_and_split(test_ratio=0.15, val_ratio=0.15):
     
     perform_eda(raw)
 
+    # ==============================================================================
+    # Train / Validation / Test Ayrımı
+    # Veriyi %70 Eğitim, %15 Doğrulama %15 Test olarak böldük. Bu sayede
+    # Veri sızıntısı engellendi. Model, eğitimde hiç görmediği veriyle test edilecek.
+    # ==============================================================================
     tmp       = raw.train_test_split(test_size=test_ratio, seed=SEED)
     test_raw  = tmp["test"]
     val_size  = val_ratio / (1.0 - test_ratio)
@@ -233,8 +282,12 @@ def load_and_split(test_ratio=0.15, val_ratio=0.15):
 # 5. MODEL MİMARİLERİ
 # ─────────────────────────────────────────────
 
+# ==============================================================================
+# MODEL 1: TextCNN (1D-CNN) - Uzamsal  öznitelik çıkarır. Kelime gruplarını 
+# tıpkı resimlerdeki pikseller gibi tarayarak yerel örüntüleri yakalar.
+# ==============================================================================
+
 class TextCNN(nn.Module):
-    """ Paralel çok-kernel 1D-CNN (TextCNN) """
     def __init__(self, vocab_size, embed_dim, num_classes, dropout=DROPOUT_RATE):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
@@ -266,23 +319,32 @@ class TextCNN(nn.Module):
 
 
 class MaskedAttention(nn.Module):
-    """ Gelişmiş Dikkat (Self-Attention) Mekanizması - Padding Maskeleme ile """
     def __init__(self, hidden_dim):
         super().__init__()
         self.attention = nn.Linear(hidden_dim, 1, bias=False)
 
     def forward(self, rnn_outputs, mask):
         attn_scores = self.attention(rnn_outputs).squeeze(-1)
+        
+        #Maskeleme (Masking)
+        # Metinler aynı uzunlukta olsun diye kısa metinlerin sonuna <PAD> (0) ekledik.
+        # Attention mekanizmasının bu gereksiz "0" tokenlarına odaklanıp kafasının 
+        # karışmasını engellemek için onların skorunu eksi sonsuz yapıyoruz.
         attn_scores = attn_scores.masked_fill(mask == 0, -1e9)
+        
         attn_weights = torch.softmax(attn_scores, dim=-1)
         context = torch.bmm(attn_weights.unsqueeze(1), rnn_outputs).squeeze(1)
         return context
 
 
+# ==============================================================================
+# MODEL 2: Bi-LSTM + Masked Attention. CNN'in aksine metni
+# baştan sona ve sondan başa okur. Kelimelerin sırasını hatırlar. Attention 
+# mekanizması ise uzun cümlenin içindeki en kritik kelimelere daha fazla ağırlık verir.
+# ==============================================================================
 class BiLSTMAttention(nn.Module):
-    """ Çift Yönlü LSTM + Masked Attention """
     def __init__(self, vocab_size, embed_dim, num_classes,
-                 hidden=128, dropout=DROPOUT_RATE): # hidden boyutu 64'ten 128'e çıkarıldı
+                 hidden=128, dropout=DROPOUT_RATE):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
         self.lstm = nn.LSTM(
@@ -340,8 +402,13 @@ def evaluate(model, loader, criterion):
 def full_training_run(model, name, train_loader, val_loader, test_loader,
                       lr=LEARNING_RATE, epochs=EPOCHS):
     model = model.to(device)
-    # Modelin aşırı emin olup ezberlemesini engellemek için Label Smoothing eklendi (0.1)
+    
+    #Label Smoothing
+    # Normalde model tahmin ederken tek bir doğru hedefler [1, 0, 0]. 
+    # Smoothing (0.1) ile hedefi [0.9, 0.01, 0.01...] şeklinde yumuşatırız. 
+    # Bu modelin overfit olmasını engeller.
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1) 
+    
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
@@ -370,6 +437,12 @@ def full_training_run(model, name, train_loader, val_loader, test_loader,
             torch.save(model.state_dict(), f"best_{name.replace(' ','_')}.pt")
         else:
             patience_ctr += 1
+            # ==============================================================================
+            #Overfitting Analizi
+            # Model ezberlemeye (overfit) başladığında eğitim kaybı düşse de 
+            # doğrulama (validation) kaybı artar. PATIENCE=7 epoch boyunca iyileşme olmazsa 
+            # (Early Stopping) eğitimi zorla keserek modelin körü körüne ezberlemesini durduruyoruz.
+            # ==============================================================================
             if patience_ctr >= PATIENCE:
                 print(f"\n  [Erken Durdurma] {PATIENCE} tur iyileşme yok.")
                 break
@@ -379,6 +452,11 @@ def full_training_run(model, name, train_loader, val_loader, test_loader,
 
     _plot_curves(tr_losses, vl_losses, vl_accs, name)
 
+    # ==============================================================================
+    # Accuracy, Precision, Recall, F1, vb.
+    # Yalnızca "Accuracy" (Doğruluk oranı) yanıltıcı olabilir. Modelin hangi 
+    # sınıfı iyi bildiğini (Precision), hangi sınıfı kaçırdığını (Recall) görürüz.
+    # ==============================================================================
     _, test_acc, preds, tgts = evaluate(model, test_loader, criterion)
     print(f"\n  Test Doğruluğu: {test_acc:.4f}")
     print(classification_report(tgts, preds, target_names=LABEL_NAMES, digits=4))
@@ -401,7 +479,11 @@ def full_training_run(model, name, train_loader, val_loader, test_loader,
 # ─────────────────────────────────────────────
 # 7. HİPERPARAMETRE ANALİZİ
 # ─────────────────────────────────────────────
-
+# ==============================================================================
+# Modelin adımlarını ne kadar büyük atacağını belirleyen 
+# Öğrenme Hızı en kritik parametredir. 1e-2, 1e-3 ve 1e-4 gibi farklı hızları 
+# TextCNN modeli üzerinde 5'er epoch deneyerek, hangi hızın optimum olduğunu analiz ediyoruz.
+# ==============================================================================
 def lr_analysis(ModelClass, vocab_size, train_loader, val_loader, epochs=5):
     print(f"\n{'='*50}\n  Öğrenme Hızı Duyarlılık Analizi\n{'='*50}")
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -409,7 +491,7 @@ def lr_analysis(ModelClass, vocab_size, train_loader, val_loader, epochs=5):
 
     for lr in LR_GRID:
         m = ModelClass(vocab_size, EMBEDDING_DIM, NUM_CLASSES).to(device)
-        crit = nn.CrossEntropyLoss(label_smoothing=0.1) # Analizde de Label Smoothing uygulandı
+        crit = nn.CrossEntropyLoss(label_smoothing=0.1) 
         opt  = optim.AdamW(m.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
         vl, va = [], []
         for _ in range(epochs):
